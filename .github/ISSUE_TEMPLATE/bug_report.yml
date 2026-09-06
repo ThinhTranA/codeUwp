@@ -1,0 +1,70 @@
+name: Bug report
+description: Something did not work
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please run `npm run diagnostics` in the `extension` folder and attach the
+        `uwp-tools-diagnostics.txt` it writes. It gathers the prerequisites report, the
+        extension log and the XAML tap state, which between them explain most behaviour.
+
+        **That file contains file paths, which include your user name.** Read it before
+        attaching if this repository is public.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+      placeholder: |
+        I ran "UWP: Build, Deploy and Run", waited for the flame in the status bar, then
+        changed Text= on a TextBlock and saved. The app did not change.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part
+      options:
+        - XAML hot reload
+        - Debugging (F5, breakpoints)
+        - Build
+        - Deploy
+        - Something else / not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: |
+        Attach `uwp-tools-diagnostics.txt`, or paste it here. If you could not run it, paste
+        `%LOCALAPPDATA%\Temp\uwp-tools\extension.log` instead.
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: project
+    attributes:
+      label: Project type
+      description: |
+        Classic UWP (C#), UWP on modern .NET, or C++/WinRT — and the Configuration and
+        Platform. Only Debug can be debugged; Release uses .NET Native, which no managed
+        debugger can attach to.
+      placeholder: Classic UWP C#, Debug|x64
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: known
+    attributes:
+      label: Already checked
+      description: These account for most reports, so it saves a round trip to rule them out.
+      options:
+        - label: "`UWP: Check Prerequisites` reports no blocking issues"
+        - label: "The project sets `<DebugType>portable</DebugType>` for Debug (a Windows PDB means the debugger attaches but binds nothing)"
+        - label: "The file was edited in the same VS Code window that is running the extension"
