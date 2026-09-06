@@ -114,6 +114,28 @@ grant is `icacls /grant *S-1-15-2-1:(OI)(CI)(M)` — by SID, since the name is l
 - After changing a problem matcher, add the real MSBuild line you saw to the `SAMPLES` array
   in `scripts/test-matcher.js` rather than trusting the regex by eye.
 
+## Inside a real VS Code: `npm run test:vscode`
+
+Two suites live in `test/suite/`, both running inside a real extension host. Narrow a run
+with `UWP_TEST_SUITE` — each suite builds, deploys and launches an app, so running both is
+several minutes.
+
+```
+$env:UWP_TEST_SUITE = "hotreload"   # or "debug"
+npm run test:vscode
+```
+
+**`hotreload.test.js`** is the one that matters for XAML reload: it runs `uwp.run`, edits
+`MainPage.xaml` *through the editor API* so the change arrives as the same
+`onDidSaveTextDocument` event a person's keystrokes produce, saves, and asserts the tap
+reported `OK`. It restores the file afterwards — leaving a marker in it would become the next
+run's baseline.
+
+This suite exists because `hotReload.ts` only runs inside an extension host, so the headless
+loop cannot reach it. Everything it depends on is asserted headlessly; the wiring between a
+save and those pieces is what this covers, and that is where every bug in the feature has
+been. **Do not debug hot reload by asking a human to edit a file** — run this instead.
+
 ## The debug handoff: `npm run test:vscode`
 
 Runs a real VS Code with the extension loaded and the suite in `test/suite/` inside its
