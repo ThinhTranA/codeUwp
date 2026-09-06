@@ -276,7 +276,9 @@
     "build:native": "npm run build:launcher && npm run build:tap",
     "e2e": "npm run compile && npm run build:native && node scripts/e2e.js",
     "test:vscode": "npm run compile && npm run build:native && node test/runTest.js",
-    "check": "npm run compile && npm run build:native && npm run test && node scripts/e2e.js"
+    "check": "npm run compile && npm run build:native && npm run test && node scripts/e2e.js",
+    "devhost": "powershell -NoProfile -ExecutionPolicy Bypass -File ../tools/Start-DevHost.ps1",
+    "log": "node scripts/tail-log.js"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
