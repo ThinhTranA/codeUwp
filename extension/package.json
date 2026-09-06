@@ -62,6 +62,10 @@
         "title": "UWP: Build, Deploy and Debug"
       },
       {
+        "command": "uwp.refreshHotReload",
+        "title": "UWP: Refresh XAML Hot Reload"
+      },
+      {
         "command": "uwp.resumeHeld",
         "title": "UWP: Resume App Held for Debugger"
       },

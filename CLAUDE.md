@@ -186,6 +186,19 @@ the e2e loop, so a regression fails the build.
   ours, and one inside InfoBar's template. Addressing by `x:Name` without filtering to app
   markup picks whichever came first.
 
+**Mapping a source edit to a live element:**
+
+- **`SourceInfo.LineNumber` points into the element's *opening tag*, not at its first line.**
+  Measured: it is the last line of that tag as the XAML compiler saw it. `CounterText` in the
+  sample spans lines 46-49 and reports **48**, because its final attribute is an `x:Bind` and
+  compiled bindings are stripped before they reach the runtime.
+- So match by **containment** — is the reported line inside this element's opening-tag span —
+  rather than against either endpoint. Opening tags cannot nest, so spans are disjoint and a
+  line belongs to at most one element. Matching on the start line looks right on single-line
+  elements and fails on every multi-line one.
+- Diff against the **baseline the app was built from**, not the previous save: the live tree's
+  line numbers refer to the markup actually loaded, and an edit shifts everything after it.
+
 **Applying an edit — working, asserted by the loop:**
 
 - **A property edit is three calls, not one.** `SetProperty` takes a property *index*, so the

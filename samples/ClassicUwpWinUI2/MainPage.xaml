@@ -29,7 +29,7 @@
         <TextBlock
             x:Name="Title"
             Grid.Row="0"
-            Text="UWP Tools for VS Code"
+            Text="UWP Tools for VS Code tests some "
             FontSize="32"
             FontWeight="SemiBold"
             Foreground="{StaticResource AccentFill}" />

@@ -4,8 +4,10 @@ import * as vscode from 'vscode';
 import { deploy, DeployError, launch, terminate, type DeployResult } from './core/deploy';
 import { runDoctor, summarise, type Check } from './core/doctor';
 import { discoverProjects, UwpFlavour, type UwpProject } from './core/projects';
+import { findUwpLaunch, launchApp, HOT_RELOAD_ENVIRONMENT } from './core/launcher';
 import { findMsBuild } from './core/toolchain';
 import { UwpDebugConfigurationProvider } from './debug';
+import { HotReloadSession } from './hotReload';
 import { UwpTaskProvider, type UwpTaskDefinition } from './tasks';
 
 let output: vscode.OutputChannel;
@@ -33,6 +35,42 @@ let projects: UwpProject[] = [];
 let activeProject: UwpProject | undefined;
 let lastDeploy: DeployResult | undefined;
 let debugProvider: UwpDebugConfigurationProvider;
+let hotReload: HotReloadSession | undefined;
+let extensionContext: vscode.ExtensionContext;
+let extensionRoot = '';
+
+/**
+ * Attaches XAML hot reload to an app that has just been launched.
+ *
+ * Failing to start is reported but never fails the launch: an app running without hot reload
+ * is still a running app, and the developer asked for the app.
+ */
+async function startHotReload(
+    context: vscode.ExtensionContext,
+    project: UwpProject,
+    deployResult: DeployResult,
+    pid: number
+): Promise<void> {
+    hotReload?.dispose();
+    hotReload = undefined;
+
+    const uwpLaunchPath = findUwpLaunch(context.extensionPath);
+    if (!uwpLaunchPath) {
+        return;
+    }
+    try {
+        hotReload = await HotReloadSession.start(
+            context.extensionPath,
+            deployResult,
+            uwpLaunchPath,
+            pid,
+            path.dirname(project.projectPath),
+            log
+        );
+    } catch (error) {
+        log(`hot reload: ${String(error)}`);
+    }
+}
 
 export interface UwpToolsApi {
     /** The output channel's contents, for the integration suite. Not a public API. */
@@ -40,6 +78,8 @@ export interface UwpToolsApi {
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<UwpToolsApi> {
+    extensionContext = context;
+    extensionRoot = context.extensionPath;
     output = vscode.window.createOutputChannel('UWP Tools');
     context.subscriptions.push(output);
 
@@ -98,6 +138,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<UwpToo
                     ? `Resumed ${released} app(s) that were held waiting for a debugger.`
                     : 'No apps are currently held.'
             );
+        }),
+        vscode.commands.registerCommand('uwp.refreshHotReload', async () => {
+            if (!hotReload) {
+                void vscode.window.showInformationMessage('XAML hot reload is not running. Use "UWP: Build, Deploy and Run".');
+                return;
+            }
+            await hotReload.refresh();
         }),
         vscode.commands.registerCommand('uwp.terminate', runTerminate)
     );
@@ -328,13 +375,33 @@ async function runDeploy(alsoLaunch: boolean): Promise<void> {
                     log(message);
                     progress.report({ message });
                 };
-                lastDeploy = await deploy(project, report);
+                const uwpLaunchPath = findUwpLaunch(extensionRoot);
+                lastDeploy = await deploy(project, report, uwpLaunchPath);
                 log(`registered ${lastDeploy.packageFullName}`);
 
                 if (alsoLaunch) {
                     progress.report({ message: 'launching' });
-                    await launch(lastDeploy.aumid);
-                    log(`launched ${lastDeploy.aumid}`);
+                    if (!uwpLaunchPath) {
+                        // Without the launcher there is no pid, and without a pid the tap
+                        // cannot be injected — so this path runs the app but not hot reload.
+                        await launch(lastDeploy.aumid);
+                        log(`launched ${lastDeploy.aumid} (no launcher: hot reload unavailable)`);
+                        return;
+                    }
+
+                    // Launched through uwplaunch so the hot-reload environment is set at
+                    // process start; there is no way to add it afterwards.
+                    const outcome = await launchApp({
+                        uwpLaunchPath,
+                        packageFullName: lastDeploy.packageFullName,
+                        aumid: lastDeploy.aumid,
+                        environment: [...HOT_RELOAD_ENVIRONMENT],
+                        waitForAttach: false
+                    });
+                    log(`launched ${lastDeploy.aumid}, pid ${outcome.pid}`);
+
+                    progress.report({ message: 'starting XAML hot reload' });
+                    await startHotReload(extensionContext, project, lastDeploy, outcome.pid);
                 }
             } catch (error) {
                 const deployError = error instanceof DeployError ? error : undefined;

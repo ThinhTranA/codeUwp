@@ -25,6 +25,7 @@ const {
     HOT_RELOAD_ENVIRONMENT
 } = require('../out/core/launcher');
 const { findTapDll, stageTap, injectTap, readTapReport, readVisualTree, elementPath, isApplicationMarkup, sendCommands } = require('../out/core/tap');
+const { parseXamlElements, diffXaml, resolveEdits } = require('../out/core/hotreload');
 
 function arg(name, fallback) {
     const index = process.argv.indexOf(`--${name}`);
@@ -293,21 +294,39 @@ async function main() {
         console.log(`        CounterButton path: ${elementPath(tree, button)}`);
     }
 
-    console.log('\n[9] apply a live edit (XAML hot reload)');
-    const title = (tree ?? []).find((n) => n.name === 'Title' && isApplicationMarkup(n));
-    record('found the element to edit', Boolean(title), title ? `${title.type} @ ${title.sourceFile}:${title.sourceLine}` : 'missing');
+    console.log('\n[9] XAML hot reload: edit the file, apply to the running app');
 
-    // A string property on a named element: the simplest edit that is unambiguously visible,
-    // and the one every other edit is a variation of.
-    const applied = await sendCommands(workDir, [
-        {
-            op: 'SetProperty',
-            handle: title.handle,
-            property: 'Text',
-            valueType: 'String',
-            value: 'Hot reloaded'
-        }
-    ]);
+    // The real path, not a synthesised command: take the markup the app was built from, make
+    // the kind of edit a developer would make, and let the differ work out what changed.
+    const xamlPath = path.join(path.dirname(project.projectPath), 'MainPage.xaml');
+    const baseline = fs.readFileSync(xamlPath, 'utf8');
+    const marker = `Hot reloaded ${Date.now()}`;
+
+    const titleLine = parseXamlElements(baseline).find((e) => e.attributes.get('x:Name') === 'Title');
+    record('parsed the element out of the markup', Boolean(titleLine), titleLine ? `${titleLine.tag} at line ${titleLine.line}` : 'not found');
+
+    const updated = baseline.replace(
+        /(<TextBlock[^>]*x:Name="Title"[\s\S]*?Text=")([^"]*)(")/,
+        `$1${marker}$3`
+    );
+    record('produced an edited version of the file', updated !== baseline, `Text -> "${marker}"`);
+
+    const diff = diffXaml(baseline, updated);
+    record(
+        'diff reduced it to one property edit',
+        diff.edits.length === 1 && diff.edits[0].property === 'Text',
+        diff.unsupported ?? diff.edits.map((e) => `${e.tag}:${e.line} ${e.property}`).join(', ')
+    );
+
+    const resolved = resolveEdits(diff.edits, tree, 'MainPage.xaml');
+    record(
+        'edit aimed at a live element by source line',
+        resolved.commands.length === 1,
+        resolved.unresolved.map((u) => u.reason).join('; ') || `handle ${resolved.commands[0]?.handle}`
+    );
+
+    const title = (tree ?? []).find((n) => n.handle === resolved.commands[0]?.handle);
+    const applied = await sendCommands(workDir, resolved.commands);
     record(
         'tap reported the edit applied',
         applied.length === 1 && applied[0].status === 'OK',
@@ -321,7 +340,7 @@ async function main() {
     ]);
     record(
         'the running app holds the new value',
-        readBack[0]?.status === 'VALUE=Hot reloaded',
+        readBack[0]?.status === `VALUE=${marker}`,
         readBack[0]?.status ?? '(no answer)'
     );
 
