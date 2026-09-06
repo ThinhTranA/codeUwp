@@ -1,0 +1,18 @@
+# Sources and build inputs: the package ships compiled output only.
+src/**
+scripts/**
+test/**
+tsconfig.json
+**/*.ts
+**/*.map
+
+# The integration-test sandbox, which holds a downloaded VS Code (~1 GB).
+.vscode-test/**
+.vscode/**
+
+# Dev dependencies. The extension has no runtime dependencies, so node_modules
+# has no business in the package.
+node_modules/**
+
+.gitignore
+.vscodeignore
