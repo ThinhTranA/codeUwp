@@ -92,6 +92,118 @@ export async function injectTap(
     }
 }
 
+/** One element of the live visual tree, as the tap saw it. */
+export interface VisualTreeNode {
+    handle: string;
+    parent: string;
+    childIndex: number;
+    type: string;
+    /** The element's `x:Name`, empty when it has none. */
+    name: string;
+    /**
+     * The XAML file and line that declared this element.
+     *
+     * Only populated when `ENABLE_XAML_DIAGNOSTICS_SOURCE_INFO=1` was set at process start.
+     * This is what lets an edit in a source file be aimed at a live element, so an empty value
+     * here means hot reload cannot map markup to the tree.
+     */
+    sourceFile: string;
+    sourceLine: number;
+}
+
+/**
+ * Whether an element came from the application's own markup rather than a control template.
+ *
+ * The tree contains far more than the developer wrote: every control expands its template, so
+ * a single `InfoBar` contributes a dozen elements from the framework's `generic.xaml`. Those
+ * are not editable from the user's source and must not be addressed as if they were.
+ *
+ * The distinction is in the URI. The app's own markup is `ms-appx:///Page.xaml` — an empty
+ * authority. A framework's is authority-qualified, `ms-appx://Microsoft.UI.Xaml.2.8/...`, and
+ * built-in themes come from `ms-resource:`.
+ *
+ * This matters more than it sounds: the sample has two elements named `Title`, one ours and
+ * one inside InfoBar's template. Addressing by name without this filter picks whichever came
+ * first.
+ */
+export function isApplicationMarkup(node: VisualTreeNode): boolean {
+    return node.sourceFile.startsWith('ms-appx:///');
+}
+
+function unescapeField(value: string): string {
+    return value.replace(/\\(.)/g, (_, ch: string) =>
+        ch === 't' ? '\t' : ch === 'r' ? '\r' : ch === 'n' ? '\n' : ch
+    );
+}
+
+/**
+ * Reads the visual tree snapshot the tap wrote.
+ *
+ * Handles stay strings rather than becoming numbers: they are 64-bit values, and JavaScript
+ * numbers would silently lose precision on a large one. Nothing here needs their magnitude,
+ * only their identity.
+ */
+export function readVisualTree(workDir: string): VisualTreeNode[] | undefined {
+    let raw: string;
+    try {
+        raw = fs.readFileSync(path.join(workDir, 'tree.tsv'), 'utf16le').replace(/^﻿/, '');
+    } catch {
+        return undefined;
+    }
+
+    const lines = raw.split(/\r?\n/).filter((line) => line.length > 0);
+    if (lines.length === 0) {
+        return undefined;
+    }
+    // First line is the header; a file with only a header is a real answer (an empty tree),
+    // not a failure.
+    return lines.slice(1).map((line) => {
+        const [handle, parent, childIndex, type, name, sourceFile, sourceLine] = line.split('\t');
+        return {
+            handle: handle ?? '0',
+            parent: parent ?? '0',
+            childIndex: Number(childIndex ?? 0),
+            type: unescapeField(type ?? ''),
+            name: unescapeField(name ?? ''),
+            sourceFile: unescapeField(sourceFile ?? ''),
+            sourceLine: Number(sourceLine ?? 0)
+        };
+    });
+}
+
+/**
+ * Builds the addressable path of an element, the way an edit will refer to it.
+ *
+ * Named elements are addressed by name; unnamed ones by type and position among same-type
+ * siblings. A path built from the root survives the tree being rebuilt, which a raw handle
+ * does not — and unnamed elements are the common case in real markup, so addressing by name
+ * alone would leave most of a page unreachable.
+ */
+export function elementPath(nodes: VisualTreeNode[], node: VisualTreeNode): string {
+    const byHandle = new Map(nodes.map((n) => [n.handle, n]));
+    const segments: string[] = [];
+
+    for (let current: VisualTreeNode | undefined = node; current; current = byHandle.get(current.parent)) {
+        // A name roots the path only when it is unambiguous *within the app's own markup*.
+        // Control templates reuse ordinary names — the sample has a second `Title` inside
+        // InfoBar's template — so an unqualified name is not an address.
+        const nameIsUnique =
+            current.name !== '' &&
+            nodes.filter((n) => n.name === current!.name && isApplicationMarkup(n)).length === 1;
+        if (nameIsUnique && isApplicationMarkup(current)) {
+            segments.unshift(`#${current.name}`);
+            break;
+        }
+        const siblings = nodes.filter(
+            (n) => n.parent === current!.parent && n.type === current!.type
+        );
+        const index = siblings.findIndex((n) => n.handle === current!.handle);
+        segments.unshift(siblings.length > 1 ? `${current.type}[${Math.max(index, 0)}]` : current.type);
+    }
+
+    return segments.join('/');
+}
+
 /** Reads the tap's report, or undefined if it has not written one yet. */
 export function readTapReport(workDir: string): TapReport | undefined {
     const file = path.join(workDir, 'tap-report.txt');

@@ -25,6 +25,8 @@
 #include <xamlOM.h>
 
 #include <string>
+#include <vector>
+#include <sstream>
 
 // Must match the CLSID the host passes to InitializeXamlDiagnosticsEx.
 // {2C7B1E44-9F3A-4D5E-B18C-6A0D5E7F2A91}
@@ -48,15 +50,10 @@ static std::wstring ModuleDirectory()
     return slash == std::wstring::npos ? L"" : full.substr(0, slash);
 }
 
-static void WriteReport(const std::wstring& directory, const std::wstring& text)
+static void WriteTextFile(const std::wstring& path, const std::wstring& text)
 {
-    if (directory.empty())
-    {
-        return;
-    }
-    const std::wstring file = directory + L"\\tap-report.txt";
     HANDLE handle = CreateFileW(
-        file.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS,
+        path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS,
         FILE_ATTRIBUTE_NORMAL, nullptr);
     if (handle == INVALID_HANDLE_VALUE)
     {
@@ -70,12 +67,66 @@ static void WriteReport(const std::wstring& directory, const std::wstring& text)
     CloseHandle(handle);
 }
 
+static void WriteReport(const std::wstring& directory, const std::wstring& text)
+{
+    if (directory.empty())
+    {
+        return;
+    }
+    WriteTextFile(directory + L"\\tap-report.txt", text);
+}
+
 static std::wstring Hex(HRESULT hr)
 {
     wchar_t buffer[32] = {};
     swprintf_s(buffer, L"0x%08X", static_cast<unsigned>(hr));
     return buffer;
 }
+
+static std::wstring Num(unsigned long long value)
+{
+    wchar_t buffer[32] = {};
+    swprintf_s(buffer, L"%llu", value);
+    return buffer;
+}
+
+/// Tabs and newlines are the record and field separators, so any value carrying them would
+/// silently corrupt the row. XAML type and property names never contain them; user-authored
+/// x:Name values are not supposed to either, but "not supposed to" is not a guarantee worth
+/// betting a parser on.
+static std::wstring Escape(const wchar_t* value)
+{
+    std::wstring out;
+    if (!value)
+    {
+        return out;
+    }
+    for (const wchar_t* p = value; *p; ++p)
+    {
+        switch (*p)
+        {
+        case L'\t': out += L"\\t"; break;
+        case L'\r': out += L"\\r"; break;
+        case L'\n': out += L"\\n"; break;
+        case L'\\': out += L"\\\\"; break;
+        default: out += *p; break;
+        }
+    }
+    return out;
+}
+
+/// One node of the live visual tree, flattened. Parent and child index are kept rather than a
+/// nested structure so the host can rebuild the tree itself and so a row stays one line.
+struct TreeNode
+{
+    unsigned long long handle = 0;
+    unsigned long long parent = 0;
+    unsigned int childIndex = 0;
+    std::wstring type;
+    std::wstring name;
+    std::wstring sourceFile;
+    unsigned int sourceLine = 0;
+};
 
 class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback
 {
@@ -181,6 +232,24 @@ public:
             report += L"reportDirectory   = (fell back to module directory)\r\n";
         }
 
+        // Enumerate the live tree. AdviseVisualTreeChange replays what already exists as Add
+        // notifications before returning, so by the time it comes back m_nodes holds the
+        // current tree. There is no separate "read the tree" call to make.
+        if (m_tree)
+        {
+            const HRESULT hrAdvise = m_tree->AdviseVisualTreeChange(this);
+            report += L"AdviseVisualTree  = ";
+            report += SUCCEEDED(hrAdvise) ? L"OK" : Hex(hrAdvise);
+            report += L"\r\n";
+            report += L"elements          = ";
+            report += Num(m_nodes.size());
+            report += L"\r\n";
+            if (SUCCEEDED(hrAdvise))
+            {
+                WriteTree(directory);
+            }
+        }
+
         WriteReport(directory, report);
         return S_OK;
     }
@@ -191,18 +260,73 @@ public:
         return m_diagnostics->QueryInterface(riid, ppv);
     }
 
-    /// Called as the framework walks the tree. Not used by this spike, but the interface has
-    /// to be implemented or the framework will not treat this as a diagnostics provider.
+    /// <summary>
+    /// The framework's running commentary on the visual tree.
+    ///
+    /// Calling AdviseVisualTreeChange replays the tree that already exists as a burst of Add
+    /// notifications, then keeps sending them as it changes — so this is both the enumeration
+    /// mechanism and the live feed; there is no separate "get the tree" call.
+    ///
+    /// This arrives on the app's UI thread, which is the only thread XAML may be touched from.
+    /// Nothing here does real work for that reason: it records and returns.
+    /// </summary>
     HRESULT STDMETHODCALLTYPE OnVisualTreeChange(
-        ParentChildRelation, VisualElement, VisualMutationType) override
+        ParentChildRelation relation, VisualElement element, VisualMutationType mutation) override
     {
+        if (mutation == VisualMutationType::Add)
+        {
+            TreeNode node;
+            node.handle = element.Handle;
+            node.parent = relation.Parent;
+            node.childIndex = relation.ChildIndex;
+            node.type = Escape(element.Type);
+            node.name = Escape(element.Name);
+            // Populated only when ENABLE_XAML_DIAGNOSTICS_SOURCE_INFO was set at process
+            // start; without it these are empty and an element cannot be traced to markup.
+            node.sourceFile = Escape(element.SrcInfo.FileName);
+            node.sourceLine = element.SrcInfo.LineNumber;
+            m_nodes.push_back(std::move(node));
+        }
+        else
+        {
+            // A Remove during the initial replay would mean the tree changed under us; drop
+            // the node so the snapshot stays consistent with what is actually there.
+            for (size_t i = 0; i < m_nodes.size(); ++i)
+            {
+                if (m_nodes[i].handle == element.Handle)
+                {
+                    m_nodes.erase(m_nodes.begin() + static_cast<ptrdiff_t>(i));
+                    break;
+                }
+            }
+        }
         return S_OK;
     }
 
 private:
+    /// Writes the flattened tree as TSV. One line per element, fixed columns, so the host can
+    /// parse it without a dependency and a truncated write is detectable.
+    void WriteTree(const std::wstring& directory) const
+    {
+        std::wostringstream out;
+        out << L"handle\tparent\tindex\ttype\tname\tsourceFile\tsourceLine\r\n";
+        for (const TreeNode& node : m_nodes)
+        {
+            out << Num(node.handle) << L'\t'
+                << Num(node.parent) << L'\t'
+                << node.childIndex << L'\t'
+                << node.type << L'\t'
+                << node.name << L'\t'
+                << node.sourceFile << L'\t'
+                << node.sourceLine << L"\r\n";
+        }
+        WriteTextFile(directory + L"\\tree.tsv", out.str());
+    }
+
     ULONG m_refs = 1;
     IXamlDiagnostics* m_diagnostics = nullptr;
     IVisualTreeService* m_tree = nullptr;
+    std::vector<TreeNode> m_nodes;
 };
 
 class TapFactory final : public IClassFactory

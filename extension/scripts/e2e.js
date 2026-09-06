@@ -24,7 +24,7 @@ const {
     disableDebugging,
     HOT_RELOAD_ENVIRONMENT
 } = require('../out/core/launcher');
-const { findTapDll, stageTap, injectTap, readTapReport } = require('../out/core/tap');
+const { findTapDll, stageTap, injectTap, readTapReport, readVisualTree, elementPath, isApplicationMarkup } = require('../out/core/tap');
 
 function arg(name, fallback) {
     const index = process.argv.indexOf(`--${name}`);
@@ -250,6 +250,52 @@ async function main() {
     // The one that decides whether hot reload is possible at all: SetProperty, CreateInstance
     // and ReplaceResource live on IVisualTreeService3 and its ancestors.
     record('IVisualTreeService3 available', report?.hasVisualTreeService3 === true, '');
+
+    const tree = readVisualTree(workDir);
+    record('visual tree snapshot written', Array.isArray(tree) && tree.length > 0, `${tree?.length ?? 0} elements`);
+
+    // The sample's own named elements. Finding them proves the snapshot is the real tree and
+    // not, say, only the diagnostics layer or a partially-built one.
+    const named = new Map((tree ?? []).filter((n) => n.name).map((n) => [n.name, n]));
+    for (const expected of ['Title', 'CounterButton', 'CounterText']) {
+        record(`found x:Name="${expected}"`, named.has(expected), named.get(expected)?.type ?? 'missing');
+    }
+
+    // Source info is what lets an edit in a .xaml file be aimed at a live element. Without it
+    // the tree is readable but not editable from markup, so this guards the next phase.
+    const appElements = (tree ?? []).filter(isApplicationMarkup);
+    record(
+        'app elements traced to their own markup',
+        appElements.length > 0,
+        `${appElements.length} of ${tree.length} from ms-appx:///`
+    );
+
+    // Specific lines, not just "some source info". A wrong-but-present mapping would pass a
+    // vaguer assertion and then aim every edit at the wrong element.
+    const button = named.get('CounterButton');
+    record(
+        'CounterButton maps to its markup line',
+        button?.sourceFile === 'ms-appx:///MainPage.xaml' && button.sourceLine > 0,
+        `${button?.sourceFile}:${button?.sourceLine}`
+    );
+
+    // The tree contains control-template internals too, and they reuse ordinary names: the
+    // sample ends up with two elements called `Title`, one ours and one inside InfoBar's
+    // template. Addressing must not confuse them.
+    const titles = (tree ?? []).filter((n) => n.name === 'Title');
+    record(
+        'duplicate template names are distinguishable',
+        titles.length > 1 && titles.filter(isApplicationMarkup).length === 1,
+        `${titles.length} named "Title", ${titles.filter(isApplicationMarkup).length} in app markup`
+    );
+
+    if (button) {
+        console.log(`        CounterButton path: ${elementPath(tree, button)}`);
+        const unnamed = appElements.find((n) => !n.name && n.type.endsWith('TextBlock'));
+        if (unnamed) {
+            console.log(`        unnamed TextBlock : ${elementPath(tree, unnamed)}  (${path.basename(unnamed.sourceFile)}:${unnamed.sourceLine})`);
+        }
+    }
 
     if (!KEEP) {
         console.log('\n[9] cleanup');

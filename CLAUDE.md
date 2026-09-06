@@ -81,6 +81,13 @@ undocumented Windows behaviour. When you work one out, write it where the code d
 6. **UWP has no AnyCPU.** Platform is always x86/x64/ARM64.
 7. **Debug is CoreCLR, Release is .NET Native.** Only Debug can be debugged by ICorDebug at
    all; a Release UWP process loads `mrt100_app.dll` and raises no runtime-startup event.
+8. **C# Edit and Continue is possible on classic UWP Debug**, and Visual Studio does it. Do
+   not conclude otherwise from the runtime version: there are two mechanisms, and only one is
+   unavailable. `.NET Hot Reload` (`MetadataUpdater.ApplyUpdate`) needs .NET 6+ and UWP's
+   CoreCLR 2.2 ships no `MetadataUpdater`; classic EnC (Roslyn `EmitDifference` deltas applied
+   through `ICorDebugModule2::ApplyChanges`) works and is what VS uses. What blocks it in VS
+   Code is that `vsdbg` exposes no EnC, so delegating cannot deliver it — it would need our own
+   ICorDebug engine plus a Roslyn delta pipeline. Deferred, not impossible.
 
 ## Launching and debugging
 
@@ -163,3 +170,18 @@ the e2e loop, so a regression fails the build.
 - Injecting before the app's XAML tree is up also gives `ERROR_NOT_FOUND`. That is timing,
   not configuration — retry rather than reconfigure.
 - `SetSite` arrives on the app's UI thread, which is the only thread XAML may be touched from.
+- **`AdviseVisualTreeChange` is the enumeration mechanism**, not just a subscription: it replays
+  the existing tree as `Add` notifications before returning. There is no "get the tree" call.
+
+**Reading the tree, measured on the sample (30 elements, 8 from app markup):**
+
+- **`SourceInfo` maps a live element back to its markup** — `ms-appx:///MainPage.xaml:45` for
+  `CounterButton`. This is what `ENABLE_XAML_DIAGNOSTICS_SOURCE_INFO=1` buys, and it is what
+  will let an edit in a file be aimed at an element.
+- **Most of the tree is not the developer's.** Every control expands its template, so one
+  `InfoBar` contributes a dozen elements from the framework's `generic.xaml`. The app's own
+  markup is `ms-appx:///Page.xaml` — empty authority. A framework's is authority-qualified
+  (`ms-appx://Microsoft.UI.Xaml.2.8/...`) or `ms-resource:`.
+- **Names are not unique across that boundary.** The sample has two elements called `Title`:
+  ours, and one inside InfoBar's template. Addressing by `x:Name` without filtering to app
+  markup picks whichever came first.
