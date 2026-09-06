@@ -2,7 +2,7 @@
   "name": "uwp-tools",
   "displayName": "UWP Tools",
   "description": "Build, deploy, debug and XAML hot reload UWP apps from VS Code.",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "publisher": "uwp-tools",
   "private": true,
   "license": "MIT",
