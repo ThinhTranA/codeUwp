@@ -113,12 +113,18 @@ export class HotReloadSession implements vscode.Disposable {
             }
         };
         walk(this.projectDir);
+        this.log(
+            `hot reload: baselines captured for ${[...this.baselines.keys()]
+                .map((f) => path.basename(f))
+                .join(', ')}`
+        );
     }
 
     private watch(): void {
         this.watchers.push(
             vscode.workspace.onDidSaveTextDocument((document) => {
                 if (document.fileName.toLowerCase().endsWith('.xaml')) {
+                    this.log(`hot reload: saw save of ${document.fileName}`);
                     void this.apply(document.fileName, document.getText());
                 }
             })
@@ -126,13 +132,27 @@ export class HotReloadSession implements vscode.Disposable {
     }
 
     private async apply(file: string, updated: string): Promise<void> {
+        // Every path out of this method logs. Silent returns here are indistinguishable from
+        // "hot reload is broken" to anyone watching the app, and there are four reasons an
+        // edit legitimately does nothing.
+        const name = path.basename(file);
         const key = file.toLowerCase();
         const baseline = this.baselines.get(key);
+
         if (baseline === undefined) {
-            return; // Not part of this app.
+            this.log(
+                `hot reload: ${name} saved, but it is not one of the ${this.baselines.size} file(s) `
+                + `tracked under ${this.projectDir} — not part of this app?`
+            );
+            return;
         }
         if (this.applying) {
-            return; // A save while an apply is in flight; the next save will carry the change.
+            this.log(`hot reload: ${name} saved while an apply was in flight; skipped`);
+            return;
+        }
+        if (baseline === updated) {
+            this.log(`hot reload: ${name} saved but matches the baseline; nothing to apply`);
+            return;
         }
 
         const diff = diffXaml(baseline, updated);
@@ -144,14 +164,24 @@ export class HotReloadSession implements vscode.Disposable {
             return;
         }
         if (diff.edits.length === 0) {
+            this.log(`hot reload: ${name} changed, but not in a way that maps to a property edit`);
             return;
         }
+        this.log(
+            `hot reload: ${name} — ${diff.edits.length} edit(s): `
+            + diff.edits.map((e) => `${e.tag}:${e.line} ${e.property}`).join(', ')
+        );
 
-        const resolved = resolveEdits(diff.edits, this.tree, path.basename(file));
+        const resolved = resolveEdits(diff.edits, this.tree, name);
         for (const problem of resolved.unresolved) {
             this.log(`hot reload: skipped ${problem.edit.property} — ${problem.reason}`);
         }
         if (resolved.commands.length === 0) {
+            this.log(
+                `hot reload: nothing could be aimed at a live element `
+                + `(${this.tree.length} element(s) in the snapshot). If the app has navigated `
+                + `since it started, run "UWP: Refresh XAML Hot Reload".`
+            );
             return;
         }
 

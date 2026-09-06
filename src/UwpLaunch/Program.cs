@@ -73,9 +73,18 @@ internal static class Program
                     {
                         Launcher.WriteJson(new { ok = true, pid, tid, suspended = true, aumid });
                         Console.Out.Flush();
-                        // Blocks until the caller says go. If its stdin closes, ReadLine
-                        // returns null and the app is resumed rather than stranded.
-                        Console.ReadLine();
+
+                        // Waits for the caller to say go, but not forever. Closing stdin ends
+                        // the read, which covers a caller that exits cleanly; a caller that
+                        // dies badly — an extension host crash, say — leaves the pipe open,
+                        // and an unbounded wait would strand this process holding both the
+                        // suspended app and a lock on this executable.
+                        var read = Task.Run(() => Console.ReadLine());
+                        if (!read.Wait(TimeSpan.FromMinutes(2)))
+                        {
+                            Console.Error.WriteLine(
+                                "No resume within 2 minutes; resuming anyway so the app is not left suspended.");
+                        }
                     };
                 }
 
