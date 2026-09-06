@@ -153,6 +153,9 @@ export class UwpDebugConfigurationProvider implements vscode.DebugConfigurationP
      */
     private readonly pending = new Map<number, PendingLaunch>();
 
+    /** When each app was held, so the wait for the debugger can be reported. */
+    private readonly launchedAt = new Map<number, number>();
+
     constructor(
         private readonly extensionRoot: string,
         private readonly resolveProject: (path?: string) => UwpProject | undefined,
@@ -279,11 +282,23 @@ export class UwpDebugConfigurationProvider implements vscode.DebugConfigurationP
             );
         }
 
+        // Each stage is timed. "The app sits on its splash screen for a while" is a common and
+        // entirely legitimate complaint, and without per-stage numbers there is no way to tell
+        // a slow build from a slow deploy from a debugger that is slow to attach.
+        const started = Date.now();
+        let mark = started;
+        const stage = (name: string): void => {
+            const now = Date.now();
+            this.log(`debug: ${name} (${now - mark} ms, ${now - started} ms total)`);
+            mark = now;
+        };
+
         if (!config.noBuild) {
             this.log('debug: building');
             if (!(await this.build(project))) {
                 throw new Error('Build failed; not deploying. See the terminal.');
             }
+            stage('built');
         }
 
         this.log('debug: deploying');
@@ -294,6 +309,7 @@ export class UwpDebugConfigurationProvider implements vscode.DebugConfigurationP
             (message) => this.log(`  ${message}`),
             uwpLaunchPath
         );
+        stage('deployed');
 
         // Hot reload needs this set at process start and there is no way to add it later.
         // Harmless when hot reload is not in use.
@@ -311,7 +327,11 @@ export class UwpDebugConfigurationProvider implements vscode.DebugConfigurationP
             environment,
             waitForAttach: true
         });
-        this.log(`debug: held at first instruction, pid ${suspended.pid}`);
+        stage(`held at first instruction, pid ${suspended.pid}`);
+
+        // The gap between here and the engine attaching is what the user sees as a splash
+        // screen: the app is created but not running. onSessionStarted logs the other end.
+        this.launchedAt.set(suspended.pid, Date.now());
 
         const name = config.name || `UWP: ${project.name}`;
         const hold = config.holdForAttach !== false;
@@ -415,7 +435,14 @@ export class UwpDebugConfigurationProvider implements vscode.DebugConfigurationP
         }
         entry.resumed = true;
         clearTimeout(entry.watchdog);
-        this.log(`debug: ${session.type} session '${session.name}' started; resuming pid ${pid}`);
+        const held = this.launchedAt.get(pid);
+        this.launchedAt.delete(pid);
+        // The held time is exactly how long the app showed a splash screen and nothing else,
+        // so it is the number to look at when someone reports a slow launch.
+        this.log(
+            `debug: ${session.type} session '${session.name}' started; resuming pid ${pid}`
+            + (held ? ` (held ${Date.now() - held} ms waiting for the debugger)` : '')
+        );
         entry.suspended.resume();
     }
 

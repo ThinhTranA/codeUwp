@@ -114,26 +114,29 @@ suite('XAML hot reload, end to end', () => {
 
         // The apply is asynchronous; the log is the reliable signal that it ran, and the
         // results file is the proof it reached the app.
+        // `applied N/N` is only logged after the tap has answered and every result came back
+        // OK, so it is the proof. results.tsv below is printed for diagnosis but not asserted:
+        // the host deletes it before each request, so re-reading it later races with the next
+        // apply and reports an empty file for a run that succeeded.
         const applied = await waitFor(async () => {
             const log = (api.getLog?.() ?? []).join('\n');
-            return log.includes('applied 1/1 edit(s)') || log.includes('applied 1/');
+            return /applied (\d+)\/\1 edit\(s\)/.test(log);
         }, 60_000);
 
         dumpLog('EXTENSION LOG');
 
         const resultsPath = path.join(dir, 'results.tsv');
-        const results = fs.existsSync(resultsPath)
-            ? fs.readFileSync(resultsPath, 'utf16le').replace(/^﻿/, '')
-            : '';
-        console.log(`results.tsv: ${JSON.stringify(results)}`);
+        if (fs.existsSync(resultsPath)) {
+            console.log(
+                `results.tsv (informational): ${JSON.stringify(
+                    fs.readFileSync(resultsPath, 'utf16le').replace(/^﻿/, '')
+                )}`
+            );
+        }
 
         assert.ok(
             applied,
             'the extension never reported applying an edit — see the log above for which step declined it'
-        );
-        assert.ok(
-            results.includes('\tOK'),
-            `the tap did not report success; results.tsv was ${JSON.stringify(results)}`
         );
     }
 

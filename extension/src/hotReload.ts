@@ -48,7 +48,18 @@ export class HotReloadSession implements vscode.Disposable {
         projectDir: string,
         log: (message: string) => void
     ): Promise<HotReloadSession | undefined> {
-        log(`hot reload: starting for pid ${pid}, project dir ${projectDir}`);
+        // A header with the environment, so a log file from another machine is self-sufficient.
+        // Without it, diagnosing someone else's report starts with a round of questions about
+        // what they have installed and where.
+        log('hot reload: ---- session start ----');
+        log(`hot reload:   pid            ${pid}`);
+        log(`hot reload:   package        ${deployResult.packageFullName}`);
+        log(`hot reload:   layout         ${deployResult.layoutDir}`);
+        log(`hot reload:   project dir    ${projectDir}`);
+        log(`hot reload:   extension      ${extensionRoot}`);
+        log(`hot reload:   uwplaunch      ${uwpLaunchPath}`);
+        log(`hot reload:   vscode         ${vscode.version}`);
+        log(`hot reload:   os             ${process.platform} ${process.arch}`);
 
         const tapDll = findTapDll(extensionRoot);
         if (!tapDll) {
@@ -68,6 +79,7 @@ export class HotReloadSession implements vscode.Disposable {
         // Injecting before the app's tree exists fails with ERROR_NOT_FOUND. That is timing,
         // not configuration, so retry rather than report a problem.
         let injected = false;
+        const injectStarted = Date.now();
         for (let attempt = 0; attempt < 15 && !injected; attempt++) {
             try {
                 await injectTap(uwpLaunchPath, pid, workDir);
@@ -77,10 +89,14 @@ export class HotReloadSession implements vscode.Disposable {
                     log(`hot reload: could not inject the tap after 15 tries: ${String(error)}`);
                     return undefined;
                 }
+                // Logged per attempt: a long injection is the visible symptom of the app being
+                // slow to bring its XAML tree up, and the count is how you tell that apart
+                // from a configuration problem.
+                log(`hot reload:   inject attempt ${attempt + 1} failed: ${String(error).slice(0, 120)}`);
                 await new Promise((resolve) => setTimeout(resolve, 1000));
             }
         }
-        log('hot reload: tap injected');
+        log(`hot reload: tap injected after ${Date.now() - injectStarted} ms`);
 
         const session = new HotReloadSession(workDir, uwpLaunchPath, pid, projectDir, log);
         await session.refreshTree();
