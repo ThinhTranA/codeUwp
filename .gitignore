@@ -1,0 +1,20 @@
+# Build output
+[Bb]in/
+[Oo]bj/
+AppPackages/
+BundleArtifacts/
+*.appxrecipe
+*.appxsym
+*.user
+
+# Node
+node_modules/
+out/
+dist/
+*.vsix
+
+# VS Code integration-test sandbox: a downloaded VS Code (~1 GB) plus run artefacts.
+.vscode-test/
+
+# Unpacked package layout, produced by deploy from the built .msix.
+Layout/

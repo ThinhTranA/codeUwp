@@ -1,0 +1,20 @@
+{
+    // Debugging the EXTENSION itself. F5 here opens an Extension Development Host with the
+    // repo as its workspace, so the sample app and its launch.json are already present.
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Run Extension",
+            "type": "extensionHost",
+            "request": "launch",
+            "args": [
+                "--extensionDevelopmentPath=${workspaceFolder}",
+                "${workspaceFolder}/.."
+            ],
+            "outFiles": [
+                "${workspaceFolder}/out/**/*.js"
+            ],
+            "preLaunchTask": "npm: compile"
+        }
+    ]
+}

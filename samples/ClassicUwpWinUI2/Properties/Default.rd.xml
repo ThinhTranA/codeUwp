@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Runtime directives for the .NET Native toolchain, which only runs in Release. Debug builds
+  are CoreCLR and ignore this file entirely — which is precisely why Debug is the only
+  configuration a managed debugger can attach to.
+-->
+<Directives xmlns="http://schemas.microsoft.com/netfx/2013/01/metadata">
+  <Application>
+    <Assembly Name="*Application*" Dynamic="Required All" />
+  </Application>
+</Directives>

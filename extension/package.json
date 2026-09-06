@@ -1,0 +1,285 @@
+{
+  "name": "uwp-tools",
+  "displayName": "UWP Tools",
+  "description": "Build, deploy, debug and XAML hot reload UWP apps from VS Code.",
+  "version": "0.0.1",
+  "publisher": "uwp-tools",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Debuggers",
+    "Other"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "activationEvents": [
+    "workspaceContains:**/*.csproj",
+    "workspaceContains:**/*.vcxproj",
+    "workspaceContains:**/Package.appxmanifest"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "uwp.doctor",
+        "title": "UWP: Check Prerequisites (Doctor)"
+      },
+      {
+        "command": "uwp.selectProject",
+        "title": "UWP: Select Active Project"
+      },
+      {
+        "command": "uwp.selectConfiguration",
+        "title": "UWP: Select Configuration and Platform"
+      },
+      {
+        "command": "uwp.build",
+        "title": "UWP: Build"
+      },
+      {
+        "command": "uwp.rebuild",
+        "title": "UWP: Rebuild"
+      },
+      {
+        "command": "uwp.clean",
+        "title": "UWP: Clean"
+      },
+      {
+        "command": "uwp.deploy",
+        "title": "UWP: Deploy"
+      },
+      {
+        "command": "uwp.run",
+        "title": "UWP: Build, Deploy and Run"
+      },
+      {
+        "command": "uwp.debug",
+        "title": "UWP: Build, Deploy and Debug"
+      },
+      {
+        "command": "uwp.resumeHeld",
+        "title": "UWP: Resume App Held for Debugger"
+      },
+      {
+        "command": "uwp.terminate",
+        "title": "UWP: Terminate Running App"
+      },
+      {
+        "command": "uwp.showProjectInfo",
+        "title": "UWP: Show Project Info"
+      }
+    ],
+    "taskDefinitions": [
+      {
+        "type": "uwp",
+        "required": [
+          "task"
+        ],
+        "properties": {
+          "task": {
+            "type": "string",
+            "description": "The UWP task to run.",
+            "enum": [
+              "build",
+              "rebuild",
+              "clean"
+            ]
+          },
+          "project": {
+            "type": "string",
+            "description": "Absolute or workspace-relative path to the project. Defaults to the active project."
+          },
+          "configuration": {
+            "type": "string",
+            "description": "MSBuild Configuration, e.g. Debug."
+          },
+          "platform": {
+            "type": "string",
+            "description": "MSBuild Platform, e.g. x64."
+          }
+        }
+      }
+    ],
+    "debuggers": [
+      {
+        "type": "uwp",
+        "label": "UWP",
+        "languages": [
+          "csharp",
+          "cpp",
+          "xml"
+        ],
+        "configurationAttributes": {
+          "launch": {
+            "properties": {
+              "project": {
+                "type": "string",
+                "description": "Path to the project. Defaults to the active project."
+              },
+              "configuration": {
+                "type": "string",
+                "description": "MSBuild Configuration. Note that only Debug can be debugged: Release is .NET Native, which no managed debugger can attach to.",
+                "default": "Debug"
+              },
+              "platform": {
+                "type": "string",
+                "enum": [
+                  "x86",
+                  "x64",
+                  "ARM64"
+                ],
+                "default": "x64"
+              },
+              "engine": {
+                "type": "string",
+                "enum": [
+                  "auto",
+                  "cppvsdbg",
+                  "coreclr",
+                  "none"
+                ],
+                "default": "auto",
+                "description": "Which debug engine to hand the process to. 'auto' picks from the project flavour and what is installed."
+              },
+              "noBuild": {
+                "type": "boolean",
+                "default": false,
+                "description": "Skip the build and deploy what is already there."
+              },
+              "env": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": [],
+                "description": "Extra KEY=VALUE pairs for the app process. ENABLE_XAML_DIAGNOSTICS_SOURCE_INFO=1 is always added."
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "uwp",
+            "request": "launch",
+            "name": "UWP: Launch",
+            "engine": "auto"
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "UWP: Launch",
+            "description": "Build, deploy and launch a UWP app under a debugger",
+            "body": {
+              "type": "uwp",
+              "request": "launch",
+              "name": "UWP: Launch",
+              "engine": "auto"
+            }
+          }
+        ]
+      }
+    ],
+    "problemMatchers": [
+      {
+        "name": "uwp-msbuild",
+        "owner": "uwp",
+        "source": "msbuild",
+        "fileLocation": [
+          "autoDetect",
+          "${workspaceFolder}"
+        ],
+        "pattern": {
+          "regexp": "^\\s*(?:\\d+>)?([^\\s(][^(]*)\\((\\d+)(?:,(\\d+))?\\)\\s*:\\s*(error|warning)\\s+([A-Za-z]+[0-9]+)\\s*:\\s*(.*?)(?:\\s+\\[[^\\]]+\\])?$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "severity": 4,
+          "code": 5,
+          "message": 6
+        }
+      },
+      {
+        "name": "uwp-msbuild-noline",
+        "owner": "uwp",
+        "source": "msbuild",
+        "fileLocation": [
+          "autoDetect",
+          "${workspaceFolder}"
+        ],
+        "pattern": {
+          "regexp": "^\\s*(?:\\d+>)?([^\\s(][^(]*?)\\s*:\\s*(error|warning)\\s+([A-Za-z]+[0-9]+)\\s*:\\s*(.*?)(?:\\s+\\[[^\\]]+\\])?$",
+          "file": 1,
+          "severity": 2,
+          "code": 3,
+          "message": 4
+        }
+      }
+    ],
+    "configuration": {
+      "title": "UWP Tools",
+      "properties": {
+        "uwp.msbuildPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to MSBuild.exe. Empty means discover via vswhere, preferring an install with the UWP workload."
+        },
+        "uwp.configuration": {
+          "type": "string",
+          "default": "Debug",
+          "description": "Default MSBuild Configuration."
+        },
+        "uwp.platform": {
+          "type": "string",
+          "default": "x64",
+          "enum": [
+            "x86",
+            "x64",
+            "ARM64"
+          ],
+          "description": "Default MSBuild Platform. UWP has no AnyCPU."
+        },
+        "uwp.uwpLaunchPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to uwplaunch.exe. Empty means discover it beside the extension, then in the repo build output."
+        },
+        "uwp.buildVerbosity": {
+          "type": "string",
+          "default": "minimal",
+          "enum": [
+            "quiet",
+            "minimal",
+            "normal",
+            "detailed"
+          ],
+          "description": "MSBuild verbosity for build tasks."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test": "node scripts/test-matcher.js",
+    "smoke": "node scripts/smoke.js",
+    "build:launcher": "dotnet build ../src/UwpLaunch -c Release -v q --nologo",
+    "build:tap": "powershell -NoProfile -ExecutionPolicy Bypass -File ../native/XamlTap/build.ps1 -Platform x64",
+    "build:native": "npm run build:launcher && npm run build:tap",
+    "e2e": "npm run compile && npm run build:native && node scripts/e2e.js",
+    "test:vscode": "npm run compile && npm run build:native && node test/runTest.js",
+    "check": "npm run compile && npm run build:native && npm run test && node scripts/e2e.js"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/test-electron": "^2.5.2",
+    "mocha": "^10.8.2",
+    "typescript": "^5.6.0"
+  }
+}

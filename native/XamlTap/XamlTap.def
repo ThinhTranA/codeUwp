@@ -1,0 +1,5 @@
+; No LIBRARY statement: the output name comes from the linker's /OUT, and naming it here only
+; adds a quoting rule to get wrong. EXPORTS alone is what /DEF needs.
+EXPORTS
+    DllGetClassObject   PRIVATE
+    DllCanUnloadNow     PRIVATE

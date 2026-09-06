@@ -1,0 +1,34 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            // START HERE. Opens a second VS Code window (the Extension Development Host) with
+            // the UWP extension loaded and this repo as its workspace. The 'uwp' debug type
+            // only exists inside that window, which is why debugging the sample is a two-step.
+            "name": "1. Run UWP Extension",
+            "type": "extensionHost",
+            "request": "launch",
+            "args": [
+                "--extensionDevelopmentPath=${workspaceFolder}/extension",
+                "${workspaceFolder}"
+            ],
+            "outFiles": [
+                "${workspaceFolder}/extension/out/**/*.js"
+            ],
+            "preLaunchTask": "compile extension"
+        },
+        {
+            // Run this from the Extension Development Host window, not from here.
+            "name": "2. UWP: Launch sample",
+            "type": "uwp",
+            "request": "launch",
+            "project": "${workspaceFolder}/samples/ClassicUwpWinUI2/ClassicUwpWinUI2.csproj",
+            "configuration": "Debug",
+            "platform": "x64",
+            // 'auto' resolves to coreclr for a classic UWP Debug build when a C# extension is
+            // installed, otherwise cppvsdbg. Only Debug is debuggable at all: Release is
+            // .NET Native, which no managed debugger can attach to.
+            "engine": "auto"
+        }
+    ]
+}
