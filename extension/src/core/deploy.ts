@@ -70,16 +70,86 @@ export function findBuiltPackage(
     };
 }
 
+/** A framework the app's manifest says it needs. */
+interface RequiredDependency {
+    name: string;
+    minVersion: string;
+}
+
+/** Reads the `<PackageDependency>` entries the built manifest declares. */
+export function readRequiredDependencies(manifestPath: string): RequiredDependency[] {
+    let manifest: string;
+    try {
+        manifest = fs.readFileSync(manifestPath, 'utf8');
+    } catch {
+        return [];
+    }
+    const dependencies: RequiredDependency[] = [];
+    const pattern = /<PackageDependency\b[^>]*\sName="([^"]+)"[^>]*\sMinVersion="([^"]+)"/g;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(manifest)) !== null) {
+        dependencies.push({ name: match[1], minVersion: match[2] });
+    }
+    return dependencies;
+}
+
+/** Compares two `a.b.c.d` version strings. */
+function compareVersions(a: string, b: string): number {
+    const left = a.split('.').map((n) => parseInt(n, 10) || 0);
+    const right = b.split('.').map((n) => parseInt(n, 10) || 0);
+    for (let i = 0; i < 4; i++) {
+        const diff = (left[i] ?? 0) - (right[i] ?? 0);
+        if (diff !== 0) {
+            return diff;
+        }
+    }
+    return 0;
+}
+
 /**
- * Installs the framework packages the build staged alongside the app.
+ * Which of the app's declared dependencies the machine already satisfies.
  *
- * All of them, up front, deliberately. Registration reports only ONE missing dependency per
- * attempt: resolve it and the next attempt names the next one. Reacting to errors costs a
- * round trip each, and each round trip is a failed deploy in the user's face.
+ * Keyed on the manifest's own `MinVersion` rather than on "we installed this once", so
+ * upgrading a NuGet package raises the required version and the new framework is installed.
  */
+async function satisfiedDependencies(
+    required: RequiredDependency[],
+    architecture: string
+): Promise<Set<string>> {
+    if (required.length === 0) {
+        return new Set();
+    }
+    // Enumerate once and filter here. `Get-AppxPackage -Name` takes a single string, not a
+    // list: passing several throws "Cannot convert System.Object[] to System.String", which
+    // this code swallows as "no packages installed" and then reinstalls everything — the
+    // optimisation silently doing nothing, which is exactly how it was found.
+    const names = required.map((d) => `'${d.name.replace(/'/g, "''")}'`).join(',');
+    const installed = await powershellJson<{ Name: string; Version: string; Architecture: string }>(
+        `Get-AppxPackage | Where-Object { $_.Name -in @(${names}) } | ` +
+        `Select-Object Name,Version,@{n='Architecture';e={$_.Architecture.ToString()}}`
+    );
+
+    const satisfied = new Set<string>();
+    for (const dependency of required) {
+        const matches = installed.filter(
+            (p) =>
+                p.Name === dependency.name &&
+                // A framework is usable if it matches the app's architecture or is neutral.
+                (p.Architecture?.toLowerCase() === architecture.toLowerCase() ||
+                    p.Architecture?.toLowerCase() === 'neutral')
+        );
+        if (matches.some((p) => compareVersions(p.Version, dependency.minVersion) >= 0)) {
+            satisfied.add(dependency.name);
+        }
+    }
+    return satisfied;
+}
+
 export async function installDependencies(
     dependenciesDir: string,
-    progress: DeployProgress
+    progress: DeployProgress,
+    manifestPath?: string,
+    architecture = 'x64'
 ): Promise<void> {
     if (!fs.existsSync(dependenciesDir)) {
         return;
@@ -89,6 +159,39 @@ export async function installDependencies(
         .filter((file) => /\.(appx|msix)$/i.test(file))
         .map((file) => path.join(dependenciesDir, file));
 
+    // Installing an already-satisfied framework was the single slowest thing in a deploy:
+    // roughly seven seconds of a nine-second total, on every run, reinstalling packages that
+    // had not changed. These are Microsoft's runtime libraries — CoreCLR, the BCL, VCLibs,
+    // WinUI. The app's own code and XAML travel in the layout, which is re-unpacked from the
+    // freshly built .msix and re-registered every time, so skipping these cannot serve stale
+    // application code. Only a NuGet upgrade changes them, and that raises the MinVersion the
+    // manifest declares, which is what the check below compares against.
+    //
+    // All-or-nothing, deliberately. Mapping a file to the package inside it cannot be done
+    // from its name: Microsoft.VCLibs.x64.Debug.14.00.appx contains a package called
+    // Microsoft.VCLibs.140.00.Debug, so filename matching silently pairs the wrong ones.
+    // Reading each package's manifest would mean unzipping five files to save five installs.
+    // Checking whether the manifest's declared set is *entirely* satisfied needs one query and
+    // cannot mismatch; when anything is missing, installing all of them is the rare path.
+    if (manifestPath) {
+        const required = readRequiredDependencies(manifestPath);
+        if (required.length > 0) {
+            const satisfied = await satisfiedDependencies(required, architecture);
+            const missing = required.filter((d) => !satisfied.has(d.name));
+            if (missing.length === 0) {
+                progress(`all ${required.length} framework dependencies already satisfied; skipping`);
+                return;
+            }
+            progress(
+                `installing framework dependencies; missing: `
+                + missing.map((d) => `${d.name} >= ${d.minVersion}`).join(', ')
+            );
+        }
+    }
+
+    // Everything, up front. Registration reports only ONE missing dependency per attempt:
+    // resolve it and the next attempt names the next one, so reacting to errors costs a round
+    // trip each and each round trip is a failed deploy in the user's face.
     for (const dependency of packages) {
         const result = await powershell(
             `try { Add-AppxPackage -Path ${psQuote(dependency)} -ErrorAction Stop; 'installed' } ` +
@@ -310,7 +413,14 @@ export async function deploy(
         await stopRunning(identityName, uwpLaunchPath);
     }
 
-    await installDependencies(built.dependenciesDir, progress);
+    // The built manifest declares exactly which frameworks the app needs and at what minimum
+    // version, so it is the right thing to check against.
+    await installDependencies(
+        built.dependenciesDir,
+        progress,
+        path.join(path.dirname(project.projectPath), 'bin', project.platform, project.configuration, 'AppxManifest.xml'),
+        project.platform
+    );
 
     const layoutDir = path.join(
         path.dirname(project.projectPath),
