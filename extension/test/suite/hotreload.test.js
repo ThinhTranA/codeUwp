@@ -73,9 +73,16 @@ suite('XAML hot reload, end to end', () => {
         }
     });
 
-    test('editing and saving a XAML file updates the running app', async () => {
-        // Build, deploy, launch, and attach hot reload — the same command a developer runs.
-        await vscode.commands.executeCommand('uwp.run');
+    /**
+     * The shared body of both launch paths.
+     *
+     * Run and debug reach hot reload differently — one starts the session directly, the other
+     * through the debug provider once the app is attached — and only the first was covered.
+     * A user reported reload doing nothing after F5 while the same edit worked after Run, so
+     * the difference is worth asserting rather than assuming.
+     */
+    async function editSaveAndAssert(launch) {
+        await launch();
 
         const family = 'ClassicUwpWinUI2-Sample_aynwpqe9gd9q2';
         const dir = workDir(family);
@@ -128,5 +135,22 @@ suite('XAML hot reload, end to end', () => {
             results.includes('\tOK'),
             `the tap did not report success; results.tsv was ${JSON.stringify(results)}`
         );
+    }
+
+    test('after UWP: Build, Deploy and Run', async () => {
+        await editSaveAndAssert(() => vscode.commands.executeCommand('uwp.run'));
+    });
+
+    test('after F5 (debug)', async () => {
+        // Restore the file first: the previous test left its marker in place, and the app is
+        // about to be rebuilt from whatever is on disk.
+        fs.writeFileSync(xamlPath, originalText, 'utf8');
+        await editSaveAndAssert(async () => {
+            await vscode.commands.executeCommand('uwp.debug');
+            // The debug path starts hot reload from a callback that is deliberately not
+            // awaited, because injecting the tap needs the app resumed and the resume is
+            // waiting on that callback's caller returning.
+            await delay(5000);
+        });
     });
 });

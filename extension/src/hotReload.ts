@@ -48,13 +48,22 @@ export class HotReloadSession implements vscode.Disposable {
         projectDir: string,
         log: (message: string) => void
     ): Promise<HotReloadSession | undefined> {
+        log(`hot reload: starting for pid ${pid}, project dir ${projectDir}`);
+
         const tapDll = findTapDll(extensionRoot);
         if (!tapDll) {
             log('hot reload: XamlTap.dll not found; build it with native/XamlTap/build.ps1');
             return undefined;
         }
 
-        const workDir = stageTap(tapDll, deployResult.packageFamilyName);
+        let workDir: string;
+        try {
+            workDir = stageTap(tapDll, deployResult.packageFamilyName);
+            log(`hot reload: staged the tap in ${workDir}`);
+        } catch (error) {
+            log(`hot reload: could not stage the tap: ${String(error)}`);
+            return undefined;
+        }
 
         // Injecting before the app's tree exists fails with ERROR_NOT_FOUND. That is timing,
         // not configuration, so retry rather than report a problem.
@@ -65,12 +74,13 @@ export class HotReloadSession implements vscode.Disposable {
                 injected = true;
             } catch (error) {
                 if (attempt === 14) {
-                    log(`hot reload: could not inject the tap: ${String(error)}`);
+                    log(`hot reload: could not inject the tap after 15 tries: ${String(error)}`);
                     return undefined;
                 }
                 await new Promise((resolve) => setTimeout(resolve, 1000));
             }
         }
+        log('hot reload: tap injected');
 
         const session = new HotReloadSession(workDir, uwpLaunchPath, pid, projectDir, log);
         await session.refreshTree();
@@ -80,16 +90,34 @@ export class HotReloadSession implements vscode.Disposable {
         return session;
     }
 
+    /**
+     * Waits for the tree to stop growing, rather than taking the first one offered.
+     *
+     * Injection succeeds as soon as the diagnostics endpoint exists, which is early in XAML
+     * startup — before the app has built its page. The first snapshot is therefore routinely a
+     * couple of root visuals, and a session that keeps it can aim no edit at anything.
+     */
     private async refreshTree(): Promise<void> {
-        for (let attempt = 0; attempt < 10; attempt++) {
+        let best: VisualTreeNode[] = [];
+        let stable = 0;
+
+        for (let attempt = 0; attempt < 40 && stable < 3; attempt++) {
             const tree = readVisualTree(this.workDir);
-            if (tree && tree.length > 0) {
-                this.tree = tree;
-                return;
+            if (tree && tree.length > best.length) {
+                best = tree;
+                stable = 0;
+            } else if (best.length > 0) {
+                stable++;
             }
-            await new Promise((resolve) => setTimeout(resolve, 300));
+            await new Promise((resolve) => setTimeout(resolve, 250));
         }
-        this.log('hot reload: the tap wrote no visual tree');
+
+        this.tree = best;
+        if (best.length === 0) {
+            this.log('hot reload: the tap wrote no visual tree');
+        } else {
+            this.log(`hot reload: visual tree settled at ${best.length} element(s)`);
+        }
     }
 
     /**
@@ -171,6 +199,15 @@ export class HotReloadSession implements vscode.Disposable {
             `hot reload: ${name} — ${diff.edits.length} edit(s): `
             + diff.edits.map((e) => `${e.tag}:${e.line} ${e.property}`).join(', ')
         );
+
+        // Re-read the snapshot rather than trusting the one taken at launch. The tap keeps the
+        // file current as the tree changes, and the tree at injection time is routinely
+        // incomplete — the app may not have built its page yet, and it certainly will have
+        // changed by the time anyone edits a file.
+        const current = readVisualTree(this.workDir);
+        if (current && current.length > this.tree.length) {
+            this.tree = current;
+        }
 
         const resolved = resolveEdits(diff.edits, this.tree, name);
         for (const problem of resolved.unresolved) {

@@ -49,7 +49,17 @@ export function stageTap(tapDllPath: string, packageFamilyName: string): string 
         packageFamilyName
     );
     fs.mkdirSync(workDir, { recursive: true });
-    fs.copyFileSync(tapDllPath, path.join(workDir, TAP_DLL_NAME));
+
+    // A tap already loaded into a previous instance of the app holds this DLL open, so the
+    // copy fails with EBUSY. That is not a reason to give up: the staged copy is the same
+    // build, and refusing to continue turns a stale process into "hot reload is unavailable".
+    try {
+        fs.copyFileSync(tapDllPath, path.join(workDir, TAP_DLL_NAME));
+    } catch (error) {
+        if (!fs.existsSync(path.join(workDir, TAP_DLL_NAME))) {
+            throw error;
+        }
+    }
 
     // A stale report from a previous session would be read as this session's answer.
     fs.rmSync(path.join(workDir, 'tap-report.txt'), { force: true });

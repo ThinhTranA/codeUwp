@@ -345,9 +345,12 @@ export class UwpDebugConfigurationProvider implements vscode.DebugConfigurationP
         // Deliberately not awaited: injecting the tap needs the app's XAML tree to be up,
         // which cannot happen until it has been resumed, and resuming waits on this returning.
         if (this.onLaunched) {
+            this.log(`debug: starting XAML hot reload for pid ${suspended.pid}`);
             void this.onLaunched(project, deployResult, suspended.pid).catch((error) =>
                 this.log(`hot reload: ${String(error)}`)
             );
+        } else {
+            this.log('debug: no hot reload callback wired; XAML edits will not apply');
         }
 
         this.pending.set(suspended.pid, {

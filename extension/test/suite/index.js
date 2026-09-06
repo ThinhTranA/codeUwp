@@ -13,6 +13,11 @@ function run() {
         reporter: 'spec'
     });
 
+    // UWP_TEST_GREP runs a single test by title, for isolating one that misbehaves.
+    if (process.env.UWP_TEST_GREP) {
+        mocha.grep(process.env.UWP_TEST_GREP);
+    }
+
     // UWP_TEST_SUITE narrows a run to one file. Each suite here builds, deploys and launches
     // a real app, so running all of them takes long enough that iterating on one is painful.
     const suiteDir = __dirname;

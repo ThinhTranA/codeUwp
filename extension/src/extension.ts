@@ -1,3 +1,4 @@
+import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 
@@ -22,12 +23,34 @@ let statusBar: vscode.StatusBarItem;
  */
 const logBuffer: string[] = [];
 
+/**
+ * Where the log is also written, so it can be read without the VS Code window that produced
+ * it.
+ *
+ * An OutputChannel is visible only to whoever is looking at that window, which makes
+ * diagnosing a report from someone else a matter of asking them to copy text out. A file costs
+ * nothing and turns "what did it say?" into something answerable directly.
+ */
+const LOG_FILE = path.join(
+    process.env['LOCALAPPDATA'] ?? process.env['TEMP'] ?? '.',
+    'Temp',
+    'uwp-tools',
+    'extension.log'
+);
+
 function log(message: string): void {
-    logBuffer.push(message);
+    const line = `[${new Date().toISOString().slice(11, 23)}] ${message}`;
+    logBuffer.push(line);
     if (logBuffer.length > 2000) {
         logBuffer.shift();
     }
     output.appendLine(message);
+    try {
+        fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
+        fs.appendFileSync(LOG_FILE, line + '\r\n');
+    } catch {
+        // Logging must never be the reason something fails.
+    }
 }
 
 let msbuildPath: string | undefined;

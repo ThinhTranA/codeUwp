@@ -172,6 +172,12 @@ the e2e loop, so a regression fails the build.
 - `SetSite` arrives on the app's UI thread, which is the only thread XAML may be touched from.
 - **`AdviseVisualTreeChange` is the enumeration mechanism**, not just a subscription: it replays
   the existing tree as `Add` notifications before returning. There is no "get the tree" call.
+- **Do not snapshot the tree once.** The diagnostics endpoint appears *early* in XAML startup,
+  before the app has built its page, so an injection that retries until it succeeds lands at
+  the moment the tree is emptiest — measured at **2 elements instead of 30**. Everything
+  downstream then works perfectly and aims at nothing. The tap republishes `tree.tsv` as
+  notifications arrive (debounced, since startup is a burst), and the host waits for the count
+  to stop growing before settling.
 
 **Reading the tree, measured on the sample (30 elements, 8 from app markup):**
 

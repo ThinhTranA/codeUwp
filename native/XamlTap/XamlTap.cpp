@@ -29,6 +29,7 @@
 #include <sstream>
 #include <thread>
 #include <atomic>
+#include <mutex>
 
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.UI.Core.h>
@@ -371,6 +372,11 @@ public:
     HRESULT STDMETHODCALLTYPE OnVisualTreeChange(
         ParentChildRelation relation, VisualElement element, VisualMutationType mutation) override
     {
+        // Guarded because the worker thread republishes the snapshot; this runs on the UI
+        // thread and the two would otherwise race over the vector.
+        std::lock_guard<std::mutex> guard(m_nodesLock);
+        m_treeDirty = true;
+
         if (mutation == VisualMutationType::Add)
         {
             TreeNode node;
@@ -531,6 +537,25 @@ private:
 
         while (!m_stopping)
         {
+            // Republish the snapshot whenever the tree has changed.
+            //
+            // Enumerating once at SetSite is not enough, and getting this wrong is subtle: the
+            // diagnostics endpoint appears EARLY in XAML startup, so an injection that retries
+            // until it succeeds lands at the moment the tree is at its emptiest. A host that
+            // snapshots then sees two elements instead of thirty and can aim no edit at
+            // anything. AdviseVisualTreeChange keeps sending notifications, so the file is
+            // kept current instead of being written once.
+            if (m_treeDirty)
+            {
+                // A moment of quiet first: startup produces a burst of Add notifications and
+                // rewriting on each one would publish dozens of partial trees.
+                Sleep(250);
+                if (m_treeDirty)
+                {
+                    WriteTree(directory);
+                }
+            }
+
             std::wstring text;
             if (!ReadTextFile(commandsPath, text))
             {
@@ -589,8 +614,10 @@ private:
 
     /// Writes the flattened tree as TSV. One line per element, fixed columns, so the host can
     /// parse it without a dependency and a truncated write is detectable.
-    void WriteTree(const std::wstring& directory) const
+    void WriteTree(const std::wstring& directory)
     {
+        std::lock_guard<std::mutex> guard(m_nodesLock);
+        m_treeDirty = false;
         std::wostringstream out;
         out << L"handle\tparent\tindex\ttype\tname\tsourceFile\tsourceLine\r\n";
         for (const TreeNode& node : m_nodes)
@@ -610,6 +637,8 @@ private:
     IXamlDiagnostics* m_diagnostics = nullptr;
     IVisualTreeService* m_tree = nullptr;
     std::vector<TreeNode> m_nodes;
+    std::mutex m_nodesLock;
+    std::atomic<bool> m_treeDirty{ false };
     winrt::Windows::UI::Core::CoreDispatcher m_dispatcher{ nullptr };
     std::atomic<bool> m_stopping{ false };
 };
