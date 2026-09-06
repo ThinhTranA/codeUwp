@@ -204,6 +204,80 @@ export function elementPath(nodes: VisualTreeNode[], node: VisualTreeNode): stri
     return segments.join('/');
 }
 
+/** An edit to apply to the live tree. */
+export interface TapCommand {
+    op: 'SetProperty' | 'ClearProperty' | 'GetProperty';
+    /** Element handle from a tree snapshot. */
+    handle: string;
+    property: string;
+    /** WinRT type of the value. Empty means "use the property's current type". */
+    valueType?: string;
+    value?: string;
+}
+
+export interface TapCommandResult {
+    op: string;
+    handle: string;
+    property: string;
+    /** `OK`, or the reason it failed. */
+    status: string;
+}
+
+function escapeField(value: string): string {
+    return value.replace(/\\/g, '\\\\').replace(/\t/g, '\\t').replace(/\r/g, '\\r').replace(/\n/g, '\\n');
+}
+
+/**
+ * Sends edits to the tap and waits for it to report what happened.
+ *
+ * The exchange is two files in the work folder: the host writes `commands.tsv`, the tap
+ * consumes it and writes `results.tsv`. Files rather than a pipe because the folder is already
+ * granted to the AppContainer and nothing else needs to be — a pipe would mean more sandbox
+ * surface for no benefit at this size.
+ *
+ * A stale `results.tsv` is deleted first. Without that, a previous run's answer is read back
+ * instantly and every edit appears to succeed.
+ */
+export async function sendCommands(
+    workDir: string,
+    commands: TapCommand[],
+    timeoutMs = 10_000
+): Promise<TapCommandResult[]> {
+    const resultsPath = path.join(workDir, 'results.tsv');
+    fs.rmSync(resultsPath, { force: true });
+
+    const body = commands
+        .map((c) =>
+            [c.op, c.handle, c.property, c.valueType ?? '', c.value ?? '']
+                .map((f) => escapeField(String(f)))
+                .join('\t')
+        )
+        .join('\r\n');
+
+    // UTF-16 with a BOM: the tap reads wide characters, and XAML values are routinely
+    // non-ASCII.
+    fs.writeFileSync(path.join(workDir, 'commands.tsv'), '﻿' + body + '\r\n', 'utf16le');
+
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        try {
+            const raw = fs.readFileSync(resultsPath, 'utf16le').replace(/^﻿/, '');
+            return raw
+                .split(/\r?\n/)
+                .filter((line) => line.length > 0)
+                .map((line) => {
+                    const [op, handle, property, status] = line.split('\t');
+                    return { op, handle, property, status: status ?? '' };
+                });
+        } catch {
+            await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+    }
+    throw new TapError(
+        `The tap did not answer within ${timeoutMs} ms. It applies edits on the app's UI thread, so a blocked or busy UI will stall this.`
+    );
+}
+
 /** Reads the tap's report, or undefined if it has not written one yet. */
 export function readTapReport(workDir: string): TapReport | undefined {
     const file = path.join(workDir, 'tap-report.txt');

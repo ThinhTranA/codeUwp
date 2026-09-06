@@ -24,7 +24,7 @@ const {
     disableDebugging,
     HOT_RELOAD_ENVIRONMENT
 } = require('../out/core/launcher');
-const { findTapDll, stageTap, injectTap, readTapReport, readVisualTree, elementPath, isApplicationMarkup } = require('../out/core/tap');
+const { findTapDll, stageTap, injectTap, readTapReport, readVisualTree, elementPath, isApplicationMarkup, sendCommands } = require('../out/core/tap');
 
 function arg(name, fallback) {
     const index = process.argv.indexOf(`--${name}`);
@@ -291,14 +291,44 @@ async function main() {
 
     if (button) {
         console.log(`        CounterButton path: ${elementPath(tree, button)}`);
-        const unnamed = appElements.find((n) => !n.name && n.type.endsWith('TextBlock'));
-        if (unnamed) {
-            console.log(`        unnamed TextBlock : ${elementPath(tree, unnamed)}  (${path.basename(unnamed.sourceFile)}:${unnamed.sourceLine})`);
-        }
     }
 
+    console.log('\n[9] apply a live edit (XAML hot reload)');
+    const title = (tree ?? []).find((n) => n.name === 'Title' && isApplicationMarkup(n));
+    record('found the element to edit', Boolean(title), title ? `${title.type} @ ${title.sourceFile}:${title.sourceLine}` : 'missing');
+
+    // A string property on a named element: the simplest edit that is unambiguously visible,
+    // and the one every other edit is a variation of.
+    const applied = await sendCommands(workDir, [
+        {
+            op: 'SetProperty',
+            handle: title.handle,
+            property: 'Text',
+            valueType: 'String',
+            value: 'Hot reloaded'
+        }
+    ]);
+    record(
+        'tap reported the edit applied',
+        applied.length === 1 && applied[0].status === 'OK',
+        applied.map((r) => `${r.property}=${r.status}`).join('; ')
+    );
+
+    // "The API returned S_OK" and "the live object holds the new value" are different claims,
+    // and only the second one is hot reload. Read it back from the running app.
+    const readBack = await sendCommands(workDir, [
+        { op: 'GetProperty', handle: title.handle, property: 'Text' }
+    ]);
+    record(
+        'the running app holds the new value',
+        readBack[0]?.status === 'VALUE=Hot reloaded',
+        readBack[0]?.status ?? '(no answer)'
+    );
+
+    record('app still alive after the edit', Boolean(await processById(suspended.pid)), `pid ${suspended.pid}`);
+
     if (!KEEP) {
-        console.log('\n[9] cleanup');
+        console.log('\n[10] cleanup');
         // Pairing disable-debug with the launch matters: a package left in debug mode stays
         // that way after this process exits, and nothing surfaces that to the user.
         await disableDebugging(uwpLaunch, result.packageFullName);
@@ -307,7 +337,7 @@ async function main() {
         const after = await processesFor(result.layoutDir);
         record('terminated and debug mode cleared', after.length === 0, `${after.length} process(es) left`);
     } else {
-        console.log('\n[8] cleanup skipped (--keep) -- package is still in debug mode');
+        console.log('\n[10] cleanup skipped (--keep) -- package is still in debug mode');
     }
 
     console.log('\n' + '='.repeat(64));

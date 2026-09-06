@@ -27,6 +27,11 @@
 #include <string>
 #include <vector>
 #include <sstream>
+#include <thread>
+#include <atomic>
+
+#include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.UI.Core.h>
 
 // Must match the CLSID the host passes to InitializeXamlDiagnosticsEx.
 // {2C7B1E44-9F3A-4D5E-B18C-6A0D5E7F2A91}
@@ -75,6 +80,80 @@ static void WriteReport(const std::wstring& directory, const std::wstring& text)
     }
     WriteTextFile(directory + L"\\tap-report.txt", text);
 }
+
+/// Reads a UTF-16 file written by the host, BOM tolerated. Returns false when absent.
+static bool ReadTextFile(const std::wstring& path, std::wstring& text)
+{
+    HANDLE handle = CreateFileW(
+        path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (handle == INVALID_HANDLE_VALUE)
+    {
+        return false;
+    }
+    LARGE_INTEGER size{};
+    if (!GetFileSizeEx(handle, &size) || size.QuadPart <= 0 || size.QuadPart > (16 << 20))
+    {
+        CloseHandle(handle);
+        return false;
+    }
+    std::vector<wchar_t> buffer(static_cast<size_t>(size.QuadPart) / sizeof(wchar_t));
+    DWORD read = 0;
+    const BOOL ok = ReadFile(handle, buffer.data(), static_cast<DWORD>(buffer.size() * sizeof(wchar_t)), &read, nullptr);
+    CloseHandle(handle);
+    if (!ok)
+    {
+        return false;
+    }
+    text.assign(buffer.data(), read / sizeof(wchar_t));
+    if (!text.empty() && text.front() == 0xFEFF)
+    {
+        text.erase(text.begin());
+    }
+    return true;
+}
+
+static std::vector<std::wstring> SplitFields(const std::wstring& line, wchar_t separator)
+{
+    std::vector<std::wstring> fields;
+    std::wstring current;
+    for (wchar_t ch : line)
+    {
+        if (ch == separator)
+        {
+            fields.push_back(current);
+            current.clear();
+        }
+        else
+        {
+            current += ch;
+        }
+    }
+    fields.push_back(current);
+    return fields;
+}
+
+/// A BSTR that frees itself. The mutation APIs take BSTRs and hand them back, and this file
+/// would otherwise leak one on every property edit.
+struct Bstr
+{
+    BSTR value = nullptr;
+    Bstr() = default;
+    explicit Bstr(const std::wstring& text) : value(SysAllocStringLen(text.c_str(), static_cast<UINT>(text.size()))) {}
+    ~Bstr() { if (value) { SysFreeString(value); } }
+    Bstr(const Bstr&) = delete;
+    Bstr& operator=(const Bstr&) = delete;
+};
+
+/// One instruction from the host: what to change, on which element.
+struct Command
+{
+    std::wstring op;
+    unsigned long long handle = 0;
+    std::wstring property;
+    std::wstring valueType;
+    std::wstring value;
+};
 
 static std::wstring Hex(HRESULT hr)
 {
@@ -250,7 +329,26 @@ public:
             }
         }
 
+        // The dispatcher is captured here because this call is already on the UI thread; the
+        // command loop then uses it to get back onto that thread from a worker.
+        {
+            IInspectable* raw = nullptr;
+            const HRESULT hrDispatcher = m_diagnostics ? m_diagnostics->GetDispatcher(&raw) : E_FAIL;
+            if (SUCCEEDED(hrDispatcher) && raw)
+            {
+                winrt::copy_from_abi(m_dispatcher, raw);
+                raw->Release();
+            }
+            report += L"dispatcher        = ";
+            report += m_dispatcher ? L"OK" : Hex(hrDispatcher);
+            report += L"\r\n";
+        }
+
         WriteReport(directory, report);
+
+        // Detached rather than joined: SetSite must return promptly — it is holding the UI
+        // thread — and the loop lives as long as the app does.
+        std::thread([this, directory]() { CommandLoop(directory); }).detach();
         return S_OK;
     }
 
@@ -304,6 +402,191 @@ public:
     }
 
 private:
+    /// <summary>
+    /// Applies one edit. Must run on the UI thread.
+    ///
+    /// Three steps, because that is the shape of the API: SetProperty takes a property *index*
+    /// rather than a name, so the index has to be looked up in the element's property chain
+    /// first; and the new value must be a XAML object, so it is built with CreateInstance
+    /// before it can be assigned.
+    /// </summary>
+    std::wstring Apply(const Command& command)
+    {
+        if (!m_tree)
+        {
+            return L"no IVisualTreeService";
+        }
+
+        unsigned int sourceCount = 0;
+        PropertyChainSource* sources = nullptr;
+        unsigned int valueCount = 0;
+        PropertyChainValue* values = nullptr;
+
+        HRESULT hr = m_tree->GetPropertyValuesChain(
+            command.handle, &sourceCount, &sources, &valueCount, &values);
+        if (FAILED(hr))
+        {
+            return L"GetPropertyValuesChain failed " + Hex(hr);
+        }
+
+        unsigned int index = 0;
+        bool found = false;
+        std::wstring existingType;
+        std::wstring existingValue;
+        for (unsigned int i = 0; i < valueCount; ++i)
+        {
+            if (values[i].PropertyName && _wcsicmp(values[i].PropertyName, command.property.c_str()) == 0)
+            {
+                index = values[i].Index;
+                if (values[i].ValueType)
+                {
+                    existingType = values[i].ValueType;
+                }
+                if (values[i].Value)
+                {
+                    existingValue = values[i].Value;
+                }
+                found = true;
+                break;
+            }
+        }
+
+        // The chain allocates BSTRs per entry; releasing only the arrays would leak all of
+        // them, and a property edit is something a hot-reload loop does constantly.
+        FreePropertyChain(sources, sourceCount, values, valueCount);
+
+        if (!found)
+        {
+            return L"no property named " + command.property;
+        }
+
+        // Reading a property back is how the host confirms an edit actually took: the API
+        // reporting success and the live object holding the new value are different claims.
+        if (command.op == L"GetProperty")
+        {
+            return L"VALUE=" + Escape(existingValue.c_str());
+        }
+
+        if (command.op == L"ClearProperty")
+        {
+            hr = m_tree->ClearProperty(command.handle, index);
+            return SUCCEEDED(hr) ? L"OK" : L"ClearProperty failed " + Hex(hr);
+        }
+
+        // The caller may not know the type; the property's current value knows it.
+        const std::wstring typeName = command.valueType.empty() ? existingType : command.valueType;
+        if (typeName.empty())
+        {
+            return L"cannot infer a value type for " + command.property;
+        }
+
+        Bstr type(typeName);
+        Bstr value(command.value);
+        InstanceHandle valueHandle = 0;
+        hr = m_tree->CreateInstance(type.value, value.value, &valueHandle);
+        if (FAILED(hr))
+        {
+            return L"CreateInstance(" + typeName + L") failed " + Hex(hr);
+        }
+
+        hr = m_tree->SetProperty(command.handle, valueHandle, index);
+        return SUCCEEDED(hr) ? L"OK" : L"SetProperty failed " + Hex(hr);
+    }
+
+    static void FreePropertyChain(
+        PropertyChainSource* sources, unsigned int sourceCount,
+        PropertyChainValue* values, unsigned int valueCount)
+    {
+        for (unsigned int i = 0; i < sourceCount; ++i)
+        {
+            SysFreeString(sources[i].TargetType);
+            SysFreeString(sources[i].Name);
+        }
+        for (unsigned int i = 0; i < valueCount; ++i)
+        {
+            SysFreeString(values[i].Type);
+            SysFreeString(values[i].DeclaringType);
+            SysFreeString(values[i].ValueType);
+            SysFreeString(values[i].ItemType);
+            SysFreeString(values[i].Value);
+            SysFreeString(values[i].PropertyName);
+        }
+        CoTaskMemFree(sources);
+        CoTaskMemFree(values);
+    }
+
+    /// <summary>
+    /// Watches for work from the host, on a background thread.
+    ///
+    /// The edits themselves are marshalled onto the UI thread: XAML may only be touched from
+    /// the thread that owns it, and touching it from here would corrupt the tree rather than
+    /// fail cleanly. Polling a file rather than using a pipe keeps the sandbox story simple —
+    /// the work folder is already granted to the AppContainer, and nothing else here needs to
+    /// be.
+    /// </summary>
+    void CommandLoop(std::wstring directory)
+    {
+        const std::wstring commandsPath = directory + L"\\commands.tsv";
+        const std::wstring resultsPath = directory + L"\\results.tsv";
+
+        while (!m_stopping)
+        {
+            std::wstring text;
+            if (!ReadTextFile(commandsPath, text))
+            {
+                Sleep(150);
+                continue;
+            }
+
+            std::vector<Command> commands;
+            std::wistringstream stream(text);
+            std::wstring line;
+            while (std::getline(stream, line))
+            {
+                if (!line.empty() && line.back() == L'\r') { line.pop_back(); }
+                if (line.empty()) { continue; }
+                const std::vector<std::wstring> fields = SplitFields(line, L'\t');
+                if (fields.size() < 2) { continue; }
+                Command command;
+                command.op = fields[0];
+                command.handle = _wcstoui64(fields[1].c_str(), nullptr, 10);
+                if (fields.size() > 2) { command.property = fields[2]; }
+                if (fields.size() > 3) { command.valueType = fields[3]; }
+                if (fields.size() > 4) { command.value = fields[4]; }
+                commands.push_back(std::move(command));
+            }
+
+            // Consume the request before doing the work, so a crash mid-apply cannot leave a
+            // command file that is replayed forever.
+            DeleteFileW(commandsPath.c_str());
+
+            std::wstring results;
+            if (m_dispatcher)
+            {
+                m_dispatcher.RunAsync(
+                    winrt::Windows::UI::Core::CoreDispatcherPriority::Normal,
+                    [this, &commands, &results]()
+                    {
+                        for (const Command& command : commands)
+                        {
+                            results += command.op + L'\t' + Num(command.handle) + L'\t'
+                                + command.property + L'\t' + Apply(command) + L"\r\n";
+                        }
+                    }).get();
+            }
+            else
+            {
+                for (const Command& command : commands)
+                {
+                    results += command.op + L'\t' + Num(command.handle) + L'\t'
+                        + command.property + L"\tno dispatcher\r\n";
+                }
+            }
+
+            WriteTextFile(resultsPath, results);
+        }
+    }
+
     /// Writes the flattened tree as TSV. One line per element, fixed columns, so the host can
     /// parse it without a dependency and a truncated write is detectable.
     void WriteTree(const std::wstring& directory) const
@@ -327,6 +610,8 @@ private:
     IXamlDiagnostics* m_diagnostics = nullptr;
     IVisualTreeService* m_tree = nullptr;
     std::vector<TreeNode> m_nodes;
+    winrt::Windows::UI::Core::CoreDispatcher m_dispatcher{ nullptr };
+    std::atomic<bool> m_stopping{ false };
 };
 
 class TapFactory final : public IClassFactory

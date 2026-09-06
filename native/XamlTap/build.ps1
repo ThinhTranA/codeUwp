@@ -38,12 +38,14 @@ $optimisation = if ($Configuration -eq "Debug") { "/Od /Zi" } else { "/O2" }
 $command = @"
 call "$vcvars" $Platform >nul 2>&1
 if errorlevel 1 exit /b 1
-cl.exe /nologo /LD /EHsc /std:c++17 /W4 /DUNICODE /D_UNICODE $optimisation ^
+REM C++20, not 17: C++/WinRT async (IAsyncAction::get) needs coroutines, and under
+REM /std:c++17 that resolves to <experimental/coroutine>, which now hard-errors.
+cl.exe /nologo /LD /EHsc /std:c++20 /W4 /DUNICODE /D_UNICODE $optimisation ^
   /Fo"$outDir\\" /Fd"$outDir\\" ^
   "$here\XamlTap.cpp" ^
   /link /DEF:"$here\XamlTap.def" /OUT:"$outDir\XamlTap.dll" ^
   /IMPLIB:"$outDir\XamlTap.lib" ^
-  ole32.lib oleaut32.lib
+  ole32.lib oleaut32.lib runtimeobject.lib
 "@
 
 $script = Join-Path $env:TEMP "build-xamltap-$Platform.cmd"

@@ -185,3 +185,23 @@ the e2e loop, so a regression fails the build.
 - **Names are not unique across that boundary.** The sample has two elements called `Title`:
   ours, and one inside InfoBar's template. Addressing by `x:Name` without filtering to app
   markup picks whichever came first.
+
+**Applying an edit — working, asserted by the loop:**
+
+- **A property edit is three calls, not one.** `SetProperty` takes a property *index*, so the
+  index must be found first via `GetPropertyValuesChain`; and the value must be a XAML object,
+  so it is built with `CreateInstance` before it can be assigned. The property chain also
+  carries the current `ValueType`, which is the sensible default when the caller does not say.
+- **`GetPropertyValuesChain` allocates a BSTR per field per entry.** Freeing only the two
+  arrays leaks all of them, and a hot-reload loop does this on every keystroke-ish edit.
+- **Edits must be marshalled to the UI thread.** The tap captures the `CoreDispatcher` in
+  `SetSite` (already on that thread) and its worker uses `RunAsync(...).get()` to get back onto
+  it. Touching XAML from the worker corrupts the tree rather than failing cleanly.
+- The host/tap channel is two files in the granted work folder — `commands.tsv` in,
+  `results.tsv` out. Delete a stale `results.tsv` before writing a request, or the previous
+  answer is read back instantly and every edit appears to succeed.
+- **The tap must build as C++20**, and link `runtimeobject.lib`. C++/WinRT's async needs
+  coroutines; under `/std:c++17` that resolves to `<experimental/coroutine>`, which now
+  hard-errors.
+- Verify an edit by reading the property back (`GetProperty`). "The API returned S_OK" and
+  "the live object holds the new value" are different claims, and only the second is reload.
