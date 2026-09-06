@@ -158,7 +158,18 @@ export class UwpDebugConfigurationProvider implements vscode.DebugConfigurationP
         private readonly resolveProject: (path?: string) => UwpProject | undefined,
         private readonly build: (project: UwpProject) => Promise<boolean>,
         private readonly log: (message: string) => void,
-        private readonly showLog: () => void
+        private readonly showLog: () => void,
+        /**
+         * Called once the app is attached and running, so XAML hot reload can attach too.
+         *
+         * F5 is the flow developers actually use; leaving hot reload wired only to the
+         * non-debug run made it look broken to anyone who pressed F5 and then edited a file.
+         */
+        private readonly onLaunched?: (
+            project: UwpProject,
+            deployResult: DeployResult,
+            pid: number
+        ) => Promise<void>
     ) { }
 
     provideDebugConfigurations(): vscode.DebugConfiguration[] {
@@ -330,6 +341,14 @@ export class UwpDebugConfigurationProvider implements vscode.DebugConfigurationP
             // Shorter than it was: 60 seconds of a window that never appears reads as a hang,
             // and the user gives up before the safety net fires.
         }, 30_000);
+
+        // Deliberately not awaited: injecting the tap needs the app's XAML tree to be up,
+        // which cannot happen until it has been resumed, and resuming waits on this returning.
+        if (this.onLaunched) {
+            void this.onLaunched(project, deployResult, suspended.pid).catch((error) =>
+                this.log(`hot reload: ${String(error)}`)
+            );
+        }
 
         this.pending.set(suspended.pid, {
             deployResult,

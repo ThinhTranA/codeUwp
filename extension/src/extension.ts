@@ -38,6 +38,7 @@ let debugProvider: UwpDebugConfigurationProvider;
 let hotReload: HotReloadSession | undefined;
 let extensionContext: vscode.ExtensionContext;
 let extensionRoot = '';
+let hotReloadStatus: vscode.StatusBarItem | undefined;
 
 /**
  * Attaches XAML hot reload to an app that has just been launched.
@@ -53,9 +54,11 @@ async function startHotReload(
 ): Promise<void> {
     hotReload?.dispose();
     hotReload = undefined;
+    updateHotReloadStatus('starting');
 
     const uwpLaunchPath = findUwpLaunch(context.extensionPath);
     if (!uwpLaunchPath) {
+        updateHotReloadStatus('unavailable', 'uwplaunch.exe was not found');
         return;
     }
     try {
@@ -67,8 +70,47 @@ async function startHotReload(
             path.dirname(project.projectPath),
             log
         );
+        updateHotReloadStatus(
+            hotReload ? 'active' : 'unavailable',
+            hotReload ? undefined : 'the tap could not be injected; see the UWP Tools output'
+        );
     } catch (error) {
         log(`hot reload: ${String(error)}`);
+        updateHotReloadStatus('unavailable', String(error));
+    }
+}
+
+/**
+ * Shows whether hot reload is live.
+ *
+ * Without this the only way to tell was to edit a file and see whether anything happened,
+ * which is indistinguishable from an edit that was correctly skipped.
+ */
+function updateHotReloadStatus(
+    state: 'starting' | 'active' | 'unavailable' | 'off',
+    detail?: string
+): void {
+    if (!hotReloadStatus) {
+        return;
+    }
+    switch (state) {
+        case 'starting':
+            hotReloadStatus.text = '$(sync~spin) XAML reload';
+            hotReloadStatus.tooltip = 'Attaching XAML hot reload…';
+            hotReloadStatus.show();
+            break;
+        case 'active':
+            hotReloadStatus.text = '$(flame) XAML reload';
+            hotReloadStatus.tooltip = 'XAML hot reload is active. Save a .xaml file to apply changes.';
+            hotReloadStatus.show();
+            break;
+        case 'unavailable':
+            hotReloadStatus.text = '$(warning) XAML reload';
+            hotReloadStatus.tooltip = `XAML hot reload is not running: ${detail ?? 'unknown reason'}`;
+            hotReloadStatus.show();
+            break;
+        default:
+            hotReloadStatus.hide();
     }
 }
 
@@ -82,6 +124,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<UwpToo
     extensionRoot = context.extensionPath;
     output = vscode.window.createOutputChannel('UWP Tools');
     context.subscriptions.push(output);
+
+    hotReloadStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);
+    hotReloadStatus.command = 'uwp.refreshHotReload';
+    context.subscriptions.push(hotReloadStatus);
 
     statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
     statusBar.command = 'uwp.selectProject';
@@ -102,7 +148,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<UwpToo
         (requested) => (requested ? findProject(requested) : activeProject),
         buildProject,
         log,
-        () => output.show(true)
+        () => output.show(true),
+        (project, deployResult, pid) => startHotReload(extensionContext, project, deployResult, pid)
     );
     context.subscriptions.push(
         vscode.debug.registerDebugConfigurationProvider('uwp', debugProvider),
